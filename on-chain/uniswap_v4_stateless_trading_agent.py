@@ -51,6 +51,7 @@ from config import (
     ETH_ADDRESS,
     WETH_ADDRESS,
     LOCAL_RPC_URL,
+    USE_FORK,
     OLLAMA_MODEL,
     OLLAMA_URL,
     PRIVATE_KEY,
@@ -113,18 +114,22 @@ class UniswapV4TradingAgent:
         """
         # Initialize web3 connection
         try:
+            # Choose RPC URL based on USE_FORK setting
+            rpc_url = LOCAL_RPC_URL if USE_FORK else BASE_RPC_URL
+            environment = "Foundry Anvil fork" if USE_FORK else "BASE mainnet"
+            
             # Use HTTP Provider with a sensible timeout
             self.w3 = Web3(Web3.HTTPProvider(
-                LOCAL_RPC_URL,
+                rpc_url,
                 request_kwargs={'timeout': 30.0}  # 30 second timeout for RPC requests
             ))
             
             # Check connection
             if not self.w3.is_connected():
-                logger.error(f"Could not connect to Ethereum node at {LOCAL_RPC_URL}")
-                raise ConnectionError(f"Could not connect to Ethereum node at {LOCAL_RPC_URL}")
+                logger.error(f"Could not connect to {environment} at {rpc_url}")
+                raise ConnectionError(f"Could not connect to {environment} at {rpc_url}")
                 
-            logger.info(f"Connected to Ethereum node: {LOCAL_RPC_URL}")
+            logger.info(f"Connected to {environment}: {rpc_url}")
             logger.info(f"Current block number: {self.w3.eth.block_number}")
         except Exception as e:
             logger.error(f"Error initializing Web3: {e}")
@@ -156,7 +161,8 @@ class UniswapV4TradingAgent:
         # Initialize the UniswapV4Swapper
         self.swapper = UniswapV4Swapper(self.w3, self.private_key, self.swapper_config)
         
-        logger.info(f"Trading mode: Live On-chain")
+        trading_mode = "Paper Trading (Foundry Fork)" if USE_FORK else "⚠️ LIVE TRADING (Real BASE Mainnet)"
+        logger.info(f"Trading mode: {trading_mode}")
         
         # Initialize portfolio balances
         self.portfolio = self.get_actual_balances()
@@ -1106,8 +1112,11 @@ REASONING: <your detailed reasoning for the decision>
         """
         # Print initialized message
         console = Console()
+        rpc_url = LOCAL_RPC_URL if USE_FORK else BASE_RPC_URL
+        environment = "Foundry Anvil fork" if USE_FORK else "BASE mainnet"
+        
         console.print(Panel(
-            f"Uniswap v4 Trading Agent\nModel: {OLLAMA_MODEL}\nModel Key: {MODEL_KEY}\nEthereum node: {LOCAL_RPC_URL}\nAccount: {self.address}\nTarget ETH Allocation: {self.target_eth_allocation:.2%}",
+            f"Uniswap v4 Trading Agent\nModel: {OLLAMA_MODEL}\nModel Key: {MODEL_KEY}\nEnvironment: {environment}\nEthereum node: {rpc_url}\nAccount: {self.address}\nTarget ETH Allocation: {self.target_eth_allocation:.2%}",
             title="🤖 Trading Bot Initialized",
             border_style="blue"
         ))

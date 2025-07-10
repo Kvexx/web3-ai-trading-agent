@@ -39,7 +39,10 @@ from config import (
     DEFAULT_ETH_ALLOCATION,
     USE_MLX_MODEL,
     MLX_BASE_MODEL,
-    MLX_ADAPTER_PATH
+    MLX_ADAPTER_PATH,
+    AVAILABLE_MODELS,
+    OPENROUTER_API_KEY,
+    USE_FORK
 )
 
 # Create a logger specifically for the stateful agent
@@ -163,12 +166,14 @@ class UniswapV4StatefulTradingAgent(UniswapV4TradingAgent):
     """
     
     def __init__(self, private_key=None, target_eth_allocation=DEFAULT_ETH_ALLOCATION, test_mode=False):
-        super().__init__(private_key, target_eth_allocation)
-        self.context = TradingContext()
+        # Determine model provider and configuration BEFORE calling super().__init__()
+        # This ensures model_provider is available when parent class calls _initialize_llm()
+        self.model_config = AVAILABLE_MODELS.get(MODEL_KEY.lower())
+        if not self.model_config:
+            raise ValueError(f"Invalid model key: {MODEL_KEY}. Must be one of: {', '.join(AVAILABLE_MODELS.keys())}")
         
-        # Strategy parameters from config
-        self.min_strategy_duration = MIN_STRATEGY_DURATION
-        self.max_strategy_duration = MAX_STRATEGY_DURATION
+        self.model_provider = self.model_config.get('provider', 'ollama')
+        self.model_name = self.model_config['model']
         
         # Context length management from config
         self.context_capacity = get_context_capacity(MODEL_KEY, test_mode)
@@ -177,15 +182,23 @@ class UniswapV4StatefulTradingAgent(UniswapV4TradingAgent):
         self.last_summarization_time = 0
         self.summarization_cooldown = SUMMARIZATION_COOLDOWN
         
-        # Log model information
-        logger.info(f"Using model: {OLLAMA_MODEL if not USE_MLX_MODEL else MLX_BASE_MODEL} (via key: {MODEL_KEY})")
-        logger.info(f"Context capacity: {self.context_capacity} tokens (warning threshold: {self.context_warning_threshold:.0%})")
+        # Now call parent init, which will call _initialize_llm()
+        super().__init__(private_key, target_eth_allocation)
+        self.context = TradingContext()
         
-        # Initialize LLM
-        self._initialize_llm()
+        # Strategy parameters from config
+        self.min_strategy_duration = MIN_STRATEGY_DURATION
+        self.max_strategy_duration = MAX_STRATEGY_DURATION
+        
+        # Log model information
+        provider_info = f"via {self.model_provider}"
+        if USE_MLX_MODEL:
+            provider_info = f"via MLX ({MLX_BASE_MODEL})"
+        logger.info(f"Using model: {self.model_name} {provider_info} (key: {MODEL_KEY})")
+        logger.info(f"Context capacity: {self.context_capacity} tokens (warning threshold: {self.context_warning_threshold:.0%})")
     
     def _initialize_llm(self):
-        """Unified method to initialize either MLX or Ollama LLM"""
+        """Unified method to initialize MLX, Ollama, or OpenRouter LLM"""
         if USE_MLX_MODEL:
             try:
                 # Check if adapter files exist
@@ -229,6 +242,53 @@ class UniswapV4StatefulTradingAgent(UniswapV4TradingAgent):
                 except Exception as e:
                     logger.error(f"Error loading MLX base model: {str(e)}")
                     return False
+        elif self.model_provider == 'openrouter':
+            try:
+                # Initialize OpenRouter client
+                logger.info(f"Initializing OpenRouter client for {self.model_name}")
+                start_time = time.time()
+                
+                # Import OpenAI client for OpenRouter API compatibility
+                try:
+                    from openai import OpenAI
+                except ImportError:
+                    logger.error("OpenAI library not found. Install with: pip install openai")
+                    return False
+                
+                # Initialize OpenRouter client
+                self.openrouter_client = OpenAI(
+                    base_url="https://openrouter.ai/api/v1",
+                    api_key=OPENROUTER_API_KEY,
+                )
+                
+                logger.info(f"OpenRouter client initialized in {time.time() - start_time:.2f} seconds")
+                
+                # Test connection with a lightweight request
+                logger.info(f"Testing OpenRouter connection...")
+                test_start = time.time()
+                try:
+                    response = self.openrouter_client.chat.completions.create(
+                        model=self.model_name,
+                        messages=[
+                            {"role": "system", "content": "You are a trading assistant."},
+                            {"role": "user", "content": "Hello"}
+                        ],
+                        max_tokens=10,
+                        timeout=15
+                    )
+                    logger.info(f"OpenRouter connection test successful in {time.time() - test_start:.2f} seconds")
+                    
+                    # Add OpenRouter chat method
+                    self._add_openrouter_chat_method()
+                    
+                    return True
+                except Exception as e:
+                    logger.error(f"Error testing OpenRouter connection: {e}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Error initializing OpenRouter client: {e}")
+                return False
         else:
             try:
                 # Check if Ollama client is already initialized
@@ -343,6 +403,36 @@ class UniswapV4StatefulTradingAgent(UniswapV4TradingAgent):
         
         # Add the method to self
         self.chat_with_timeout = chat_with_timeout
+
+    def _add_openrouter_chat_method(self):
+        """Add OpenRouter chat method"""
+        def chat_with_openrouter(messages, timeout=30, max_tokens=2000, temperature=0.6):
+            """Call OpenRouter with timeout protection"""
+            try:
+                response = self.openrouter_client.chat.completions.create(
+                    model=self.model_name,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    timeout=timeout
+                )
+                return {
+                    "message": {
+                        "role": "assistant", 
+                        "content": response.choices[0].message.content
+                    }
+                }
+            except Exception as e:
+                logger.warning(f"OpenRouter chat error: {e}")
+                return {
+                    "message": {
+                        "role": "assistant",
+                        "content": "I'm sorry, but I wasn't able to generate a response. Please try again."
+                    }
+                }
+        
+        # Add the method to self
+        self.chat_with_openrouter = chat_with_openrouter
 
     def update_context(self, market_data: Dict):
         """Update trading context with new market data"""
@@ -750,8 +840,29 @@ Based on this historical data and performance analysis, what trading action shou
                 else:
                     response_text = str(results)
                 logger.info(f"MLX Model Response: {response_text}")
+            elif self.model_provider == 'openrouter':
+                # Call OpenRouter API
+                start_time = time.time()
+                try:
+                    response = self.chat_with_openrouter(
+                        messages=[
+                            {"role": "system", "content": "You are a trading assistant that helps users make trading decisions based on market data. You first use chain-of-draft reasoning with short steps, then provide a clear trading action."},
+                            {"role": "user", "content": user_query}
+                        ],
+                        timeout=90,  # 90 second timeout for trading decisions
+                        max_tokens=2000,  # 2000 for OpenRouter Grok-4; 500 is suggested for fine-tuned custom chain-of-draft models
+                        temperature=0.6
+                    )
+                    
+                    response_text = response.get("message", {}).get("content", "")
+                    
+                    # Note: Don't truncate OpenRouter responses - they don't use RECOMMENDATION format
+                    logger.info(f"OpenRouter response received in {time.time() - start_time:.2f} seconds")
+                except Exception as e:
+                    logger.error(f"Error getting OpenRouter response: {e}")
+                    response_text = "ERROR: Model response timed out"
             else:
-                # Call Ollama with timeout protection
+                # Call Ollama with timeout protection for regular trading decisions
                 start_time = time.time()
                 try:
                     # Use our safe chat method with timeout - NO SYSTEM PROMPT for trader-qwen
@@ -768,7 +879,7 @@ Based on this historical data and performance analysis, what trading action shou
                     
                     response_text = response.get("message", {}).get("content", "")
                     
-                    # Truncate response after RECOMMENDATION to avoid garbage content
+                    # Truncate response after RECOMMENDATION to avoid garbage content (Ollama models only)
                     recommendation_match = re.search(r"RECOMMENDATION:.*$", response_text, re.MULTILINE)
                     if recommendation_match:
                         # Keep only up to the end of the recommendation line
@@ -782,8 +893,19 @@ Based on this historical data and performance analysis, what trading action shou
             
             logger.info(f"\n--- OBSERVATION #{len(self.context.trading_decisions)+1} ---\n{response_text}\n----------------------------")
             
-            # Extract trading decision - first look for RECOMMENDATION pattern
-            canary_match = re.search(r"RECOMMENDATION:\s+APE\s+(IN|OUT|NEUTRAL)(?:\s+([\d\.]+|part of|some)\s*(?:ETH)?)?", response_text)
+            # Print response to console so user can see it
+            print(f"\n--- OBSERVATION #{len(self.context.trading_decisions)+1} ---")
+            print(response_text)
+            print("----------------------------")
+            
+            # Extract trading decision - different parsing for different model types
+            if USE_MLX_MODEL or self.model_provider != 'openrouter':
+                # Look for RECOMMENDATION pattern (MLX/Ollama format)
+                canary_match = re.search(r"RECOMMENDATION:\s+APE\s+(IN|OUT|NEUTRAL)(?:\s+([\d\.]+|part of|some)\s*(?:ETH)?)?", response_text)
+            else:
+                # Parse natural language responses from OpenRouter models (e.g., Grok-4)
+                parsed_decision = self._parse_natural_language_trading_decision(response_text)
+                canary_match = parsed_decision
             
             if canary_match:
                 action = canary_match.group(1).upper()
@@ -797,33 +919,13 @@ Based on this historical data and performance analysis, what trading action shou
                     trade_type = "ETH_TO_USDC"
                     
                     # Determine amount based on the amount string
-                    if amount_str and amount_str.replace('.', '', 1).isdigit():
-                        # If it's a numeric value like "0.2"
-                        amount = float(amount_str)
-                    elif amount_str and "part of" in amount_str:
-                        # If it's "part of ETH"
-                        amount = 0.2 * self.portfolio["ETH"]  # Use 20% as default for "part of"
-                    else:
-                        # Default amount if not specified
-                        amount = 0.2 * self.portfolio["ETH"]
+                    amount = self._parse_trading_amount(amount_str, "ETH_TO_USDC")
                     
                 elif action == "IN":
                     trade_type = "USDC_TO_ETH"
                     
                     # Determine amount based on the amount string
-                    market_data = self.get_market_data()
-                    if amount_str and amount_str.replace('.', '', 1).isdigit():
-                        # If it's a numeric value like "0.2"
-                        usdc_amount = float(amount_str) * market_data["eth_price"]
-                        amount = usdc_amount / market_data["eth_price"]
-                    elif amount_str and "some" in amount_str:
-                        # If it's "some ETH"
-                        usdc_amount = 0.2 * self.portfolio["USDC"]
-                        amount = usdc_amount / market_data["eth_price"]
-                    else:
-                        # Default amount if not specified
-                        usdc_amount = 0.2 * self.portfolio["USDC"]
-                        amount = usdc_amount / market_data["eth_price"]
+                    amount = self._parse_trading_amount(amount_str, "USDC_TO_ETH")
                     
                 else:  # NEUTRAL
                     # For NEUTRAL, don't trade
@@ -856,21 +958,23 @@ Based on this historical data and performance analysis, what trading action shou
                     self.context.add_trading_decision(decision)
                     return
                     
-                elif trade_type == "USDC_TO_ETH" and amount * market_data["eth_price"] < 0.01:
-                    logger.warning(f"USDC amount {amount * market_data['eth_price']:.6f} too small for trade, minimum is 0.01 USDC")
-                    
-                    # Record as observation without trade
-                    decision = TradingDecision(
-                        timestamp=int(time.time()),
-                        decision_type="OBSERVATION",
-                        trade_type=None,
-                        amount=0.0,
-                        reasoning=response_text,
-                        market_state=self.context.market_states[-1],
-                        portfolio_before=self.portfolio.copy()
-                    )
-                    self.context.add_trading_decision(decision)
-                    return
+                elif trade_type == "USDC_TO_ETH":
+                    market_data = self.get_market_data()
+                    if amount * market_data["eth_price"] < 0.01:
+                        logger.warning(f"USDC amount {amount * market_data['eth_price']:.6f} too small for trade, minimum is 0.01 USDC")
+                        
+                        # Record as observation without trade
+                        decision = TradingDecision(
+                            timestamp=int(time.time()),
+                            decision_type="OBSERVATION",
+                            trade_type=None,
+                            amount=0.0,
+                            reasoning=response_text,
+                            market_state=self.context.market_states[-1],
+                            portfolio_before=self.portfolio.copy()
+                        )
+                        self.context.add_trading_decision(decision)
+                        return
                 
                 # Create trading decision
                 decision = TradingDecision(
@@ -915,6 +1019,202 @@ Based on this historical data and performance analysis, what trading action shou
         except Exception as e:
             logger.error(f"Error in observation analysis: {e}")
             traceback.print_exc()
+    
+    def _parse_natural_language_trading_decision(self, response_text: str):
+        """
+        Parse natural language trading recommendations from OpenRouter models like Grok-4.
+        Returns an object that mimics the structure expected by the existing trade execution logic.
+        """
+        try:
+            # Convert to lowercase for easier matching
+            text_lower = response_text.lower()
+            
+            # Define trading action patterns
+            sell_patterns = [
+                r'sell(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'(?:recommend|suggest)(?:ing)?\s+(?:to\s+)?sell(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'(?:would|should)\s+sell\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'disposing?\s+of\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'liquidat(?:e|ing)\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'convert(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth\s+(?:to|into)\s+usdc',
+                r'swap(?:ping)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth\s+(?:to|for)\s+usdc',
+                # Percentage-based selling
+                r'sell\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)%\s+of\s+(?:the\s+)?eth',
+                r'(?:recommend|suggest)(?:ing)?\s+(?:to\s+)?sell\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)%',
+                # Small amount selling
+                r'sell\s+(?:a\s+)?(?:small\s+)?(?:portion|amount|part)\s+(?:of\s+(?:the\s+)?eth)?',
+                r'(?:recommend|suggest)(?:ing)?\s+(?:to\s+)?sell\s+(?:a\s+)?(?:small\s+)?(?:portion|amount|part)',
+            ]
+            
+            buy_patterns = [
+                r'buy(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'(?:recommend|suggest)(?:ing)?\s+(?:to\s+)?buy(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'(?:would|should)\s+buy\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'purchas(?:e|ing)\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'acquir(?:e|ing)\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)(?:\s+|-)?eth',
+                r'convert(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?\$?([\d\.]+)\s+usdc\s+(?:to|into)\s+eth',
+                r'swap(?:ping)?\s+(?:approximately\s+)?(?:about\s+)?\$?([\d\.]+)\s+usdc\s+(?:to|for)\s+eth',
+                # USDC amount to ETH
+                r'spend(?:ing)?\s+(?:approximately\s+)?(?:about\s+)?\$?([\d\.]+)\s+usdc\s+(?:on|for)\s+eth',
+                # Percentage-based buying
+                r'buy\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)%\s+(?:worth\s+)?(?:of\s+)?eth',
+                r'(?:recommend|suggest)(?:ing)?\s+(?:to\s+)?(?:invest|put)\s+(?:approximately\s+)?(?:about\s+)?([\d\.]+)%\s+(?:in|into)\s+eth',
+            ]
+            
+            hold_patterns = [
+                r'hold(?:\s+the)?(?:\s+current)?(?:\s+position)?',
+                r'maintain(?:\s+the)?(?:\s+current)?(?:\s+position)?',
+                r'(?:do\s+)?(?:not|nothing|no)\s+(?:trade|trading|action)',
+                r'stay\s+(?:the\s+course|put)',
+                r'keep\s+(?:the\s+)?(?:current\s+)?(?:position|allocation)',
+                r'remain\s+(?:in\s+)?(?:the\s+)?(?:current\s+)?position',
+                r'neutral',
+                r'wait(?:\s+and\s+see)?',
+                r'observe(?:\s+the\s+market)?',
+                r'no\s+(?:immediate\s+)?action\s+(?:needed|required)',
+            ]
+            
+            # Check for sell signals
+            for pattern in sell_patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    amount_str = match.group(1) if match.groups() else None
+                    logger.info(f"Detected SELL signal with amount: {amount_str}")
+                    return self._create_mock_match("OUT", amount_str)
+            
+            # Check for buy signals  
+            for pattern in buy_patterns:
+                match = re.search(pattern, text_lower)
+                if match:
+                    amount_str = match.group(1) if match.groups() else None
+                    logger.info(f"Detected BUY signal with amount: {amount_str}")
+                    return self._create_mock_match("IN", amount_str)
+            
+            # Check for hold/neutral signals
+            for pattern in hold_patterns:
+                if re.search(pattern, text_lower):
+                    logger.info(f"Detected HOLD/NEUTRAL signal")
+                    return self._create_mock_match("NEUTRAL", None)
+            
+            # If no clear pattern is found, log and return None
+            logger.info(f"No clear trading signal detected in response")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error parsing natural language trading decision: {e}")
+            return None
+    
+    def _create_mock_match(self, action: str, amount_str: str):
+        """
+        Create a mock match object that mimics the structure expected by existing code.
+        This allows us to reuse the existing trade execution logic.
+        """
+        class MockMatch:
+            def __init__(self, action, amount_str):
+                self._groups = [action]
+                if amount_str is not None:
+                    self._groups.append(amount_str)
+            
+            def group(self, index):
+                if index == 1:
+                    return self._groups[0]  # action (IN/OUT/NEUTRAL)
+                elif index == 2 and len(self._groups) > 1:
+                    return self._groups[1]  # amount
+                return None
+            
+            def groups(self):
+                return tuple(self._groups[1:])  # Return everything except action as groups
+        
+        return MockMatch(action, amount_str)
+    
+    def _parse_trading_amount(self, amount_str: str, trade_type: str) -> float:
+        """
+        Parse trading amount from natural language text, handling various formats.
+        Returns the amount in ETH regardless of trade direction.
+        """
+        try:
+            if not amount_str:
+                # Default amount if not specified (conservative 2%)
+                if trade_type == "ETH_TO_USDC":
+                    return 0.02 * self.portfolio["ETH"]
+                else:  # USDC_TO_ETH
+                    market_data = self.get_market_data()
+                    usdc_amount = 0.02 * self.portfolio["USDC"]
+                    return usdc_amount / market_data["eth_price"]
+            
+            # Clean the amount string
+            amount_clean = amount_str.strip().lower()
+            
+            # Handle percentage amounts (e.g., "5%", "10%")
+            if '%' in amount_clean:
+                percentage = float(amount_clean.replace('%', ''))
+                percentage_decimal = percentage / 100.0
+                
+                if trade_type == "ETH_TO_USDC":
+                    return percentage_decimal * self.portfolio["ETH"]
+                else:  # USDC_TO_ETH
+                    market_data = self.get_market_data()
+                    usdc_amount = percentage_decimal * self.portfolio["USDC"]
+                    return usdc_amount / market_data["eth_price"]
+            
+            # Handle direct numeric amounts (e.g., "1.5", "0.1")
+            if amount_clean.replace('.', '', 1).isdigit():
+                numeric_amount = float(amount_clean)
+                
+                # For ETH_TO_USDC, amount is already in ETH
+                if trade_type == "ETH_TO_USDC":
+                    return numeric_amount
+                else:  # USDC_TO_ETH
+                    # Check if this looks like a USD amount (> 100) or ETH amount
+                    if numeric_amount > 100:
+                        # Treat as USDC amount, convert to ETH
+                        market_data = self.get_market_data()
+                        return numeric_amount / market_data["eth_price"]
+                    else:
+                        # Treat as ETH amount
+                        return numeric_amount
+            
+            # Handle descriptive amounts
+            descriptive_amounts = {
+                'small': 0.01,      # 1%
+                'little': 0.01,     # 1%
+                'tiny': 0.005,      # 0.5%
+                'portion': 0.02,    # 2%
+                'part': 0.02,       # 2%
+                'some': 0.05,       # 5%
+                'moderate': 0.1,    # 10%
+                'significant': 0.2, # 20%
+                'large': 0.3,       # 30%
+                'substantial': 0.4, # 40%
+                'major': 0.5,       # 50%
+            }
+            
+            for word, percentage in descriptive_amounts.items():
+                if word in amount_clean:
+                    if trade_type == "ETH_TO_USDC":
+                        return percentage * self.portfolio["ETH"]
+                    else:  # USDC_TO_ETH
+                        market_data = self.get_market_data()
+                        usdc_amount = percentage * self.portfolio["USDC"]
+                        return usdc_amount / market_data["eth_price"]
+            
+            # Default fallback (conservative 2%)
+            if trade_type == "ETH_TO_USDC":
+                return 0.02 * self.portfolio["ETH"]
+            else:  # USDC_TO_ETH
+                market_data = self.get_market_data()
+                usdc_amount = 0.02 * self.portfolio["USDC"]
+                return usdc_amount / market_data["eth_price"]
+                
+        except Exception as e:
+            logger.warning(f"Error parsing trading amount '{amount_str}': {e}")
+            # Safe fallback amount (1% of holdings)
+            if trade_type == "ETH_TO_USDC":
+                return 0.01 * self.portfolio["ETH"]
+            else:  # USDC_TO_ETH
+                market_data = self.get_market_data()
+                usdc_amount = 0.01 * self.portfolio["USDC"]
+                return usdc_amount / market_data["eth_price"]
     
     def _format_recent_decisions(self, decisions: List[TradingDecision]) -> str:
         """Format recent trading decisions for the prompt"""
@@ -1098,7 +1398,7 @@ Based on this historical data and performance analysis, what trading action shou
             cycle_count += 1
             
             # Process decision but don't execute trade
-            if hasattr(self, 'ollama_client'):
+            if hasattr(self, 'ollama_client') or hasattr(self, 'openrouter_client') or USE_MLX_MODEL:
                 # Run LLM decision making without executing trades
                 self.make_llm_trading_decision_observe_only()
             
@@ -1270,8 +1570,36 @@ Based on this historical data and performance analysis, what trading action shou
                 else:
                     response_text = str(results)
                 logger.info(f"MLX Model Response (Observation): {response_text}")
+            elif self.model_provider == 'openrouter':
+                # Call OpenRouter API for observation
+                start_time = time.time()
+                try:
+                    response = self.chat_with_openrouter(
+                        messages=[
+                            {"role": "system", "content": "You are a trading assistant that helps users make trading decisions based on market data. You first use chain-of-draft reasoning with short steps, then provide a clear trading action."},
+                            {"role": "user", "content": user_query}
+                        ],
+                        timeout=90,  # 90 second timeout for trading decisions
+                        max_tokens=2000, # 2000 for OpenRouter Grok-4; 500 is suggested for fine-tuned custom chain-of-draft models
+                        temperature=0.6
+                    )
+                    
+                    response_text = response.get("message", {}).get("content", "")
+                    
+                    # Debug: Log full response length and first part
+                    logger.info(f"Full OpenRouter response length: {len(response_text)} characters")
+                    if len(response_text) > 100:
+                        logger.info(f"Response preview: {response_text[:200]}...")
+                    else:
+                        logger.info(f"Full response: {response_text}")
+                    
+                    # Note: Don't truncate OpenRouter responses - they don't use RECOMMENDATION format
+                    logger.info(f"OpenRouter observation response received in {time.time() - start_time:.2f} seconds")
+                except Exception as e:
+                    logger.error(f"Error getting OpenRouter observation response: {e}")
+                    response_text = "ERROR: Model response timed out"
             else:
-                # Call Ollama with timeout protection
+                # Call Ollama with timeout protection for observation mode
                 start_time = time.time()
                 try:
                     # Use our safe chat method with timeout - NO SYSTEM PROMPT for trader-qwen
@@ -1288,7 +1616,7 @@ Based on this historical data and performance analysis, what trading action shou
                     
                     response_text = response.get("message", {}).get("content", "")
                     
-                    # Truncate response after RECOMMENDATION to avoid garbage content
+                    # Truncate response after RECOMMENDATION to avoid garbage content (Ollama models only)
                     recommendation_match = re.search(r"RECOMMENDATION:.*$", response_text, re.MULTILINE)
                     if recommendation_match:
                         # Keep only up to the end of the recommendation line
@@ -1302,8 +1630,19 @@ Based on this historical data and performance analysis, what trading action shou
             
             logger.info(f"\n--- OBSERVATION #{len(self.context.trading_decisions)+1} ---\n{response_text}\n----------------------------")
             
-            # Extract trading decision - first look for RECOMMENDATION pattern
-            canary_match = re.search(r"RECOMMENDATION:\s+APE\s+(IN|OUT|NEUTRAL)(?:\s+([\d\.]+|part of|some)\s*(?:ETH)?)?", response_text)
+            # Print response to console so user can see it
+            print(f"\n--- OBSERVATION #{len(self.context.trading_decisions)+1} ---")
+            print(response_text)
+            print("----------------------------")
+            
+            # Extract trading decision - different parsing for different model types (observation mode)
+            if USE_MLX_MODEL or self.model_provider != 'openrouter':
+                # Look for RECOMMENDATION pattern (MLX/Ollama format)
+                canary_match = re.search(r"RECOMMENDATION:\s+APE\s+(IN|OUT|NEUTRAL)(?:\s+([\d\.]+|part of|some)\s*(?:ETH)?)?", response_text)
+            else:
+                # Parse natural language responses from OpenRouter models (e.g., Grok-4)
+                parsed_decision = self._parse_natural_language_trading_decision(response_text)
+                canary_match = parsed_decision
             
             if canary_match:
                 action = canary_match.group(1).upper()
@@ -1438,7 +1777,7 @@ Based on this historical data and performance analysis, what trading action shou
     
     def _generate_initial_strategy(self):
         """Generate an initial trading strategy based on accumulated observations"""
-        if not hasattr(self, 'ollama_client') and not USE_MLX_MODEL:
+        if not hasattr(self, 'ollama_client') and not hasattr(self, 'openrouter_client') and not USE_MLX_MODEL:
             return
         
         # Get market trends
@@ -1470,6 +1809,33 @@ Based on this historical data and performance analysis, what trading action shou
             if USE_MLX_MODEL:
                 # ... existing MLX model code ...
                 pass
+            elif self.model_provider == 'openrouter':
+                # Call OpenRouter API for strategy generation
+                start_time = time.time()
+                try:
+                    response = self.chat_with_openrouter(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a trading assistant that helps users make trading decisions based on market data. You first use chain-of-draft reasoning with short steps, then provide a clear trading action.",
+                            },
+                            {
+                                "role": "user",
+                                "content": user_query
+                            }
+                        ],
+                        timeout=60,  # 60 second timeout for strategy generation
+                        max_tokens=2000,  # 2000 for OpenRouter Grok-4; 500 is suggested for fine-tuned custom chain-of-draft models
+                        temperature=0.6
+                    )
+                    
+                    strategy_text = response.get("message", {}).get("content", "")
+                    
+                    # Note: Don't truncate OpenRouter responses - they don't use RECOMMENDATION format
+                    logger.info(f"OpenRouter strategy generation completed in {time.time() - start_time:.2f} seconds")
+                except Exception as e:
+                    logger.error(f"Error generating strategy via OpenRouter: {e}")
+                    return
             else:
                 # Call Ollama with timeout protection
                 start_time = time.time()
@@ -1492,7 +1858,7 @@ Based on this historical data and performance analysis, what trading action shou
                     
                     strategy_text = response.get("message", {}).get("content", "")
                     
-                    # Truncate response after RECOMMENDATION to avoid garbage content
+                    # Truncate response after RECOMMENDATION to avoid garbage content (Ollama models only)
                     recommendation_match = re.search(r"RECOMMENDATION:.*$", strategy_text, re.MULTILINE)
                     if recommendation_match:
                         # Keep only up to the end of the recommendation line
@@ -1506,8 +1872,19 @@ Based on this historical data and performance analysis, what trading action shou
             
             logger.info(f"Initial strategy generated: {strategy_text}")
             
-            # Extract strategy based on Canary words
-            canary_match = re.search(r"####\s+APE\s+(IN|OUT|NEUTRAL)", strategy_text)
+            # Print strategy to console so user can see it
+            print(f"\n--- INITIAL STRATEGY ---")
+            print(strategy_text)
+            print("------------------------")
+            
+            # Extract strategy based on Canary words - only for MLX and Ollama models
+            if USE_MLX_MODEL or self.model_provider != 'openrouter':
+                # Look for APE pattern (MLX/Ollama format)
+                canary_match = re.search(r"####\s+APE\s+(IN|OUT|NEUTRAL)", strategy_text)
+            else:
+                # OpenRouter models don't use the APE format
+                canary_match = None
+                
             if canary_match:
                 action = canary_match.group(1)
                 strategy_summary = f"Initial strategy: APE {action}"
