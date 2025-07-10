@@ -12,6 +12,10 @@ OLLAMA_MODEL = os.environ.get("TRADING_MODEL", "qwen2.5:3b")
 
 LOCAL_RPC_URL = "http://localhost:8545"
 
+# Trading Environment Configuration
+# Set to True for Foundry Anvil fork (safe testing), False for real BASE mainnet (real money!)
+USE_FORK = True  # ⚠️ DANGER: Set to False only when you want to trade with REAL funds
+
 # Uniswap V4 contracts on BASE
 # https://docs.uniswap.org/contracts/v4/deployments
 UNISWAP_V4_POOL_MANAGER = "0x498581fF718922c3f8e6A244956aF099B2652b2b"
@@ -34,27 +38,36 @@ BASE_BLOCK_TIME = 2  # BASE chain block time is ~2 seconds
 START_BLOCK = 25350999 # This is the block number in which the Uniswap V4: Universal Router contract was deployed. Here's the transaction: https://basescan.org/tx/0x0efe6f4f59683fd326dcefe5c07f7b072740ae02fcbe81dbc1755e4aba5fe1f2
 BATCH_SIZE = 200
 
-# Ollama configuration
-# For context capacity, run `ollama show MODEL_NAME`
+# Model configuration - supports Ollama, MLX, and OpenRouter
+# For Ollama context capacity, run `ollama show MODEL_NAME`
 # You can grab Ollama-ready models from https://ollama.com/library
 # The models listed are examples, adjust to what you have locally
 AVAILABLE_MODELS = {
     'qwen3b': {
         'model': 'qwen2.5:3b',
-        'context_capacity': 32768
+        'context_capacity': 32768,
+        'provider': 'ollama'
     },
     'qwen-trader': {  
         'model': 'trader-qwen:latest',
-        'context_capacity': 32768
+        'context_capacity': 32768,
+        'provider': 'ollama'
     },
     'fin-r1': { # https://huggingface.co/Mungert/Fin-R1-GGUF
         'model': 'hf.co/Mungert/Fin-R1-GGUF',
-        'context_capacity': 32768
+        'context_capacity': 32768,
+        'provider': 'ollama'
+    },
+    'grok4': {
+        'model': 'x-ai/grok-4', # See https://openrouter.ai/x-ai/grok-4
+        'context_capacity': 256000,  # See https://openrouter.ai/x-ai/grok-4
+        'provider': 'openrouter'
     },
 }
 
-# Ollama model key from AVAILABLE_MODELS to be used with the agent
-MODEL_KEY = "qwen3b"
+# Model key from AVAILABLE_MODELS to be used with the agent
+# Use "grok4" for OpenRouter's Grok-4, "qwen3b" for local Ollama, etc.
+MODEL_KEY = "grok4"
 
 OLLAMA_MODEL = AVAILABLE_MODELS[MODEL_KEY]['model']
 OLLAMA_URL = "http://localhost:11434"
@@ -155,5 +168,4 @@ QUICK_TEST_GAN_CONFIG = {
 # Global quick test mode flag
 QUICK_TEST_MODE = False  # Set to True to enable quick test mode by default
 
-# OpenRouter Configuration
 OPENROUTER_API_KEY = "YOUR_OPENROUTER_API_KEY"

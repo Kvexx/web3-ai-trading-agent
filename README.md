@@ -199,7 +199,30 @@ hf.co/Mungert/Fin-R1-GGUF:latest    5050b9253527    4.7 GB    22 seconds ago
     insert        
 ```
 
-#### 5. Model downloads
+#### 5. OpenRouter setup (Optional - for Grok-4)
+
+If you want to use OpenRouter's Grok-4 instead of local models, follow these steps:
+
+**Sign up for OpenRouter**
+1. Visit [https://openrouter.ai/](https://openrouter.ai/) and create an account
+2. Add credits to your account for API usage
+3. Navigate to [https://openrouter.ai/keys](https://openrouter.ai/keys) to get your API key
+
+**Configure the trading agent**
+1. Edit `config.py` and make these changes:
+   ```python
+   MODEL_KEY = "grok4"  # Change from "qwen3b" to "grok4"
+   OPENROUTER_API_KEY = "your_actual_api_key_here"  # Replace with your real API key
+   ```
+
+**Cost considerations**
+- OpenRouter charges per token for API usage
+- Grok-4 is more expensive than smaller models but provides superior performance
+- Monitor your usage at [https://openrouter.ai/activity](https://openrouter.ai/activity)
+
+The trading agent will automatically detect your configuration and use OpenRouter when `MODEL_KEY = "grok4"`.
+
+#### 6. Model downloads
 
 Download the language models you want to serve through Ollama to the agent.
 
@@ -225,7 +248,7 @@ Examples (that get outdated very quickly in this space):
 - **Qwen 2.5 3B** — lightweight model suitable for fine-tuning
 - **Phi4 14B** — balanced performance and resource requirements <- hogs my MacBook Pro M3 Pro 18 GB RAM quite a bit; for your reference on billions of parameters numbers
 
-### Environment verification
+#### 7. Environment verification
 
 Verify your installation by checking each component:
 
@@ -255,7 +278,7 @@ ollama list
 
 Your environment is ready when all commands execute without errors and return expected output.
 
-### Configuration overview
+#### 8. Configuration overview
 
 The project uses a centralized configuration system in `config.py`. Key configuration areas include:
 
