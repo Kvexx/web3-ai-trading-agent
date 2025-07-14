@@ -199,9 +199,9 @@ hf.co/Mungert/Fin-R1-GGUF:latest    5050b9253527    4.7 GB    22 seconds ago
     insert        
 ```
 
-#### 5. OpenRouter setup (Optional - for Grok-4)
+#### 5. OpenRouter setup (Optional - for Grok-4, Kimi-K2)
 
-If you want to use OpenRouter's Grok-4 instead of local models, follow these steps:
+If you want to use OpenRouter's Grok-4 or Kimi-K2 instead of local models, follow these steps:
 
 **Sign up for OpenRouter**
 1. Visit [https://openrouter.ai/](https://openrouter.ai/) and create an account
@@ -211,7 +211,7 @@ If you want to use OpenRouter's Grok-4 instead of local models, follow these ste
 **Configure the trading agent**
 1. Edit `config.py` and make these changes:
    ```python
-   MODEL_KEY = "grok4"  # Change from "qwen3b" to "grok4"
+   MODEL_KEY = "grok4"  # Change from "qwen3b" to "grok4" or "kimi-k2"
    OPENROUTER_API_KEY = "your_actual_api_key_here"  # Replace with your real API key
    ```
 
