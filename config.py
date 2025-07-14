@@ -63,11 +63,16 @@ AVAILABLE_MODELS = {
         'context_capacity': 256000,  # See https://openrouter.ai/x-ai/grok-4
         'provider': 'openrouter'
     },
+    'kimi-k2': {
+        'model': 'moonshotai/kimi-k2:free', # See https://openrouter.ai/moonshotai/kimi-k2:free
+        'context_capacity': 65536,  # See https://openrouter.ai/moonshotai/kimi-k2:free
+        'provider': 'openrouter'
+    },
 }
 
 # Model key from AVAILABLE_MODELS to be used with the agent
 # Use "grok4" for OpenRouter's Grok-4, "qwen3b" for local Ollama, etc.
-MODEL_KEY = "grok4"
+MODEL_KEY = "kimi-k2"
 
 OLLAMA_MODEL = AVAILABLE_MODELS[MODEL_KEY]['model']
 OLLAMA_URL = "http://localhost:11434"
